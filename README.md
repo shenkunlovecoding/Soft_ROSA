@@ -52,6 +52,9 @@ This directory provides a "yes, first reference" implementation for that path.
 * `csrc/qkv1bit.cpp`, `csrc/qkv1bit.cu`
   * CUDA extension for the QKV-1bit backend, including the specialized
     backward kernels.
+  * The CUDA fast path bit-packs each 1-bit stream history into `uint64_t`,
+    uses bitwise compare + `__clzll` in forward, and uses a packed-domain proxy
+    backward in CUDA.
 * `qkv1bit_demo.py`
   * Proves the channel-independence trick numerically.
   * Checks forward parity for `reference / triton / cuda`.
@@ -149,6 +152,15 @@ y = qkv1bit_rosa(q, k, v, K=6, backend="triton")
 where `q/k/v` have shape `[B, T, H*C]` and the last dimension is treated as a
 flat set of independent 1-bit streams. Float inputs are quantized by sign.
 On CUDA, the fast path bit-packs the history when `K <= 64`.
+That fast path has three main pieces:
+
+1. forward uses packed history windows and `xor + __clzll` to compute suffix
+   match lengths without a byte-wise inner loop;
+2. `dv` backward uses an `atomicAdd` scatter from `best_j + 1`, reducing that
+   part from a per-target scan to an `O(T)` write pattern;
+3. `dq/dk` backward keeps the current proxy-gradient semantics but evaluates
+   the flipped candidates in packed form inside CUDA instead of byte-wise
+   replays.
 
 For the operator-style wrapper and cross-project benchmark:
 
@@ -252,6 +264,10 @@ older Python process. The manual recovery steps are:
 3. Re-run the benchmark or demo in a fresh terminal.
 4. If needed, enter the newest cache directory and run `ninja -v` to see the
    raw linker error directly.
+
+The same workflow applies to both the exact-soft scan extension and the
+`qkv1bit` extension, since both are loaded through PyTorch's JIT extension
+mechanism on Windows.
 
 ## What "correct" means in this folder
 
