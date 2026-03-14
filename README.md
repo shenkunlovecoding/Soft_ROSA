@@ -20,7 +20,13 @@ This directory provides a "yes, first reference" implementation for that path.
   * `soft_rosa_forward()`: differentiable Soft ROSA reference.
   * `hard_rosa_reference()`: simple causal Hard ROSA baseline for comparison.
   * `affine_scan_serial()`: serial reference for the diagonal affine scan.
-  * `diagonal_affine_scan()`: CUDA/Triton parallel diagonal scan with CPU fallback.
+  * `diagonal_affine_scan()`: CUDA-extension diagonal scan with Triton/CPU fallback.
+  * Exact soft selection logic with a lower-intermediate-memory no-aux path.
+* `soft_rosa_cuda.py`
+  * Lazy-loaded CUDA extension wrapper for the diagonal affine scan autograd path.
+* `soft_rosa_triton.py`
+  * Triton forward/backward kernels for the diagonal affine scan.
+  * GPU fallback module used when the CUDA extension path is unavailable.
 * `demo.py`
   * Runs three small experiments:
     * approximation-to-hard check,
@@ -52,7 +58,7 @@ This directory provides a "yes, first reference" implementation for that path.
 * `ops.py`
   * `soft_rosa_ops`: operator-style wrapper with `rosa_soft`-like `[B, H, T, D]` interface.
   * `soft_rosa_serial_ops`: force serial diagonal scan.
-  * `soft_rosa_parallel_ops`: force Triton parallel diagonal scan.
+  * `soft_rosa_parallel_ops`: force the GPU scan path (CUDA extension with Triton fallback).
   * `qkv1bit_rosa_ops`: hard QKV-1bit operator for `[B, T, H*C]`.
 * `benchmark_ops.py`
   * Benchmarks serial vs parallel diagonal scan.
@@ -94,7 +100,8 @@ vectors map to `-1`.
 
 * Scan:
   * CPU keeps the serial diagonal recurrence as the reference path.
-  * CUDA now uses a Triton parallel diagonal scan with backward support.
+  * CUDA now uses a native CUDA-extension diagonal scan with backward support.
+  * Triton remains available as a GPU fallback path for the scan only.
 
 * Complexity:
   * Current reference path is still `O(T^2)` work and `O(T^2)` memory.
@@ -200,40 +207,22 @@ That is exactly the effect we want: when channels are independent, flipping all
 channels at a fixed time step produces the same per-channel gradient information
 as flipping them one-by-one, but with about `C` times fewer forward calls.
 
-For `benchmark_ops.py`, the current CUDA run shows:
+For `benchmark_ops.py`, the current CUDA run currently shows for the exact-soft path:
 
 * serial vs parallel diagonal scan:
-  * `B*H=4, T=64`: `139.36x`
-  * `B*H=8, T=128`: `728.07x`
-  * `B*H=8, T=256`: `3077.15x`
+  * `B*H=4, T=64`: `308.21x`
+  * `B*H=8, T=128`: `920.92x`
+  * `B*H=8, T=256`: `4269.66x`
 * operator benchmark:
   * `B=1, H=2, T=64, D=8`
-    * `soft_rosa_serial_ops`: `245.87 ms`
-    * `soft_rosa_parallel_ops`: `2.25 ms`
-    * `soft_rosa_ops`: `1.75 ms`
-    * `rosa_soft_ops`: `2.81 ms`
-    * `rosa_sufa_ops`: `2.59 ms`
-    * `rosa_scan_ops`: `6.78 ms`
+    * `soft_rosa_serial_ops`: `406.25 ms`
+    * `soft_rosa_parallel_ops`: `2.61 ms`
+    * `soft_rosa_ops`: `2.15 ms`
   * `B=1, H=4, T=128, D=8`
-    * `soft_rosa_serial_ops`: `804.37 ms`
-    * `soft_rosa_parallel_ops`: `2.41 ms`
-    * `soft_rosa_ops`: `1.44 ms`
-    * `rosa_soft_ops`: `2.66 ms`
-    * `rosa_sufa_ops`: `2.78 ms`
-    * `rosa_scan_ops`: `68.57 ms`
-* QKV-1bit operator benchmark:
-  * `B=1, T=16, N=8, K=6`
-    * `reference`: `685.33 ms`
-    * `triton`: `28.84 ms`
-    * `cuda`: `10.57 ms`
-  * `B=1, T=12, N=16, K=6`
-    * `reference`: `326.53 ms`
-    * `triton`: `16.72 ms`
-    * `cuda`: `16.07 ms`
-  * `B=1, T=12, N=32, K=6`
-    * `reference`: `280.12 ms`
-    * `triton`: `16.65 ms`
-    * `cuda`: `7.88 ms`
+    * `soft_rosa_serial_ops`: `1735.48 ms`
+    * `soft_rosa_parallel_ops`: `2.79 ms`
+    * `soft_rosa_ops`: `2.65 ms`
+* The trailing `qkv1bit` CUDA benchmark may still fail on some Windows sessions if the old JIT-built `.pyd` is locked by a live Python process.
 
 ## What "correct" means in this folder
 
