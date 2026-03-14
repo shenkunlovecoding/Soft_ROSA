@@ -37,10 +37,13 @@ This directory provides a "yes, first reference" implementation for that path.
 * `qkv1bit_triton.py`
   * Triton hard-forward backend using a diagonal associative scan over the
     equality matrix.
+  * Triton backward kernels for the specialized all-channels-at-once proxy
+    gradient.
 * `qkv1bit_cuda.py`
-  * Lazy-loaded CUDA forward mirror with the same Python API.
+  * Lazy-loaded CUDA forward/backward mirror with the same Python API.
 * `csrc/qkv1bit.cpp`, `csrc/qkv1bit.cu`
-  * Forward-only CUDA extension for the QKV-1bit backend.
+  * CUDA extension for the QKV-1bit backend, including the specialized
+    backward kernels.
 * `qkv1bit_demo.py`
   * Proves the channel-independence trick numerically.
   * Checks forward parity for `reference / triton / cuda`.
@@ -189,9 +192,9 @@ For `qkv1bit_demo.py`, the current CUDA run shows:
   * `dk`: `0.000000`
   * `dv`: `0.000000`
 * benchmark:
-  * `B=1, T=16, N=8, K=6`: Triton `257.55x`, CUDA `551.90x`
-  * `B=1, T=12, N=16, K=6`: Triton `303.36x`, CUDA `652.37x`
-  * `B=1, T=12, N=32, K=6`: Triton `567.28x`, CUDA `1249.93x`
+  * `B=1, T=16, N=8, K=6`: Triton `290.14x`, CUDA `558.01x`
+  * `B=1, T=12, N=16, K=6`: Triton `331.16x`, CUDA `575.48x`
+  * `B=1, T=12, N=32, K=6`: Triton `846.52x`, CUDA `1531.36x`
 
 That is exactly the effect we want: when channels are independent, flipping all
 channels at a fixed time step produces the same per-channel gradient information
