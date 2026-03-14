@@ -24,6 +24,7 @@ This directory provides a "yes, first reference" implementation for that path.
   * Exact soft selection logic with a lower-intermediate-memory no-aux path.
 * `soft_rosa_cuda.py`
   * Lazy-loaded CUDA extension wrapper for the diagonal affine scan autograd path.
+  * Uses a packed-diagonal 1D scan implemented with CUB `DeviceScan::InclusiveScanByKey`.
 * `soft_rosa_triton.py`
   * Triton forward/backward kernels for the diagonal affine scan.
   * GPU fallback module used when the CUDA extension path is unavailable.
@@ -47,6 +48,7 @@ This directory provides a "yes, first reference" implementation for that path.
     gradient.
 * `qkv1bit_cuda.py`
   * Lazy-loaded CUDA forward/backward mirror with the same Python API.
+  * Uses a `K <= 64` packed-bit fast path in CUDA, with fallback for larger K.
 * `csrc/qkv1bit.cpp`, `csrc/qkv1bit.cu`
   * CUDA extension for the QKV-1bit backend, including the specialized
     backward kernels.
@@ -101,6 +103,7 @@ vectors map to `-1`.
 * Scan:
   * CPU keeps the serial diagonal recurrence as the reference path.
   * CUDA now uses a native CUDA-extension diagonal scan with backward support.
+  * The CUDA path packs diagonals into a 1D stream and runs a keyed segmented scan through CUB.
   * Triton remains available as a GPU fallback path for the scan only.
 
 * Complexity:
@@ -145,6 +148,7 @@ y = qkv1bit_rosa(q, k, v, K=6, backend="triton")
 
 where `q/k/v` have shape `[B, T, H*C]` and the last dimension is treated as a
 flat set of independent 1-bit streams. Float inputs are quantized by sign.
+On CUDA, the fast path bit-packs the history when `K <= 64`.
 
 For the operator-style wrapper and cross-project benchmark:
 
@@ -199,9 +203,9 @@ For `qkv1bit_demo.py`, the current CUDA run shows:
   * `dk`: `0.000000`
   * `dv`: `0.000000`
 * benchmark:
-  * `B=1, T=16, N=8, K=6`: Triton `290.14x`, CUDA `558.01x`
-  * `B=1, T=12, N=16, K=6`: Triton `331.16x`, CUDA `575.48x`
-  * `B=1, T=12, N=32, K=6`: Triton `846.52x`, CUDA `1531.36x`
+  * `B=1, T=16, N=8, K=6`: Triton `249.14x`, CUDA `495.38x`
+  * `B=1, T=12, N=16, K=6`: Triton `235.05x`, CUDA `562.43x`
+  * `B=1, T=12, N=32, K=6`: Triton `407.71x`, CUDA `767.32x`
 
 That is exactly the effect we want: when channels are independent, flipping all
 channels at a fixed time step produces the same per-channel gradient information
@@ -210,19 +214,44 @@ as flipping them one-by-one, but with about `C` times fewer forward calls.
 For `benchmark_ops.py`, the current CUDA run currently shows for the exact-soft path:
 
 * serial vs parallel diagonal scan:
-  * `B*H=4, T=64`: `308.21x`
-  * `B*H=8, T=128`: `920.92x`
-  * `B*H=8, T=256`: `4269.66x`
+  * `B*H=4, T=64`: `223.15x`
+  * `B*H=8, T=128`: `212.30x`
+  * `B*H=8, T=256`: `2783.78x`
 * operator benchmark:
   * `B=1, H=2, T=64, D=8`
-    * `soft_rosa_serial_ops`: `406.25 ms`
-    * `soft_rosa_parallel_ops`: `2.61 ms`
-    * `soft_rosa_ops`: `2.15 ms`
+    * `soft_rosa_serial_ops`: `197.37 ms`
+    * `soft_rosa_parallel_ops`: `1.96 ms`
+    * `soft_rosa_ops`: `1.60 ms`
   * `B=1, H=4, T=128, D=8`
-    * `soft_rosa_serial_ops`: `1735.48 ms`
-    * `soft_rosa_parallel_ops`: `2.79 ms`
-    * `soft_rosa_ops`: `2.65 ms`
-* The trailing `qkv1bit` CUDA benchmark may still fail on some Windows sessions if the old JIT-built `.pyd` is locked by a live Python process.
+    * `soft_rosa_serial_ops`: `774.36 ms`
+    * `soft_rosa_parallel_ops`: `1.86 ms`
+    * `soft_rosa_ops`: `1.80 ms`
+* QKV-1bit operator benchmark:
+  * `B=1, T=16, N=8, K=6`
+    * `reference`: `708.49 ms`
+    * `triton`: `1.19 ms`
+    * `cuda`: `0.83 ms`
+  * `B=1, T=12, N=16, K=6`
+    * `reference`: `285.58 ms`
+    * `triton`: `1.23 ms`
+    * `cuda`: `0.82 ms`
+  * `B=1, T=12, N=32, K=6`
+    * `reference`: `329.21 ms`
+    * `triton`: `1.39 ms`
+    * `cuda`: `0.81 ms`
+
+## Windows JIT Note
+
+If a Windows session hits `LNK1104` or a garbled `cp1` decode error while
+building the CUDA extension, the common root cause is a locked `.pyd` from an
+older Python process. The manual recovery steps are:
+
+1. Close any Python or Codex process that may still have the extension loaded.
+2. Remove the cached extension directories under:
+   `C:\Users\Administrator\AppData\Local\torch_extensions\torch_extensions\Cache\py310_cu128`
+3. Re-run the benchmark or demo in a fresh terminal.
+4. If needed, enter the newest cache directory and run `ninja -v` to see the
+   raw linker error directly.
 
 ## What "correct" means in this folder
 
